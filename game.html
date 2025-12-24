@@ -1,0 +1,291 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Birthday Maze - Web Edition</title>
+    <script src="https://cdn.jsdelivr.net/npm/brython@3.11.0/brython.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/brython@3.11.0/brython_stdlib.js"></script>
+    <style>
+        body {
+            margin: 0;
+            background: linear-gradient(135deg, #1a1f35 0%, #2a3f5f 100%);
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        canvas {
+            border: 3px solid #ffd700;
+            box-shadow: 0 0 30px rgba(255,215,0,0.5);
+            border-radius: 15px;
+            margin: 20px;
+            display: block;
+        }
+        .ui-panel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(45,55,75,0.95);
+            padding: 20px;
+            border-radius: 10px;
+            border: 2px solid #ffd700;
+            backdrop-filter: blur(10px);
+            display: flex;
+            max-width: 320px;
+            z-index: 10;
+        }
+        .btn {
+            background: linear-gradient(45deg, #ff6b6b, #ffd700);
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            color: #1a1f35;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            box-shadow: 0 4px 15px rgba(255,107,107,0.4);
+            margin-right: 0 0 8px 0;
+        }
+        .btn:disabled { opacity: 0.6; cursor: default; transform: none; }
+        .btn:hover:not(:disabled) {
+            transform: scale(1.03);
+            box-shadow: 0 6px 20px rgba(255,107,107,0.6);
+        }
+    </style>
+</head>
+<body onload="brython()">
+    <canvas id="gameCanvas" width="1000" height="700"></canvas>
+    <div class="ui-panel">
+        <h2 style="color: #ffd700; margin: 0 0 15px;">🎂 Birthday Maze</h2>
+        <button id="startBtn" class="btn">▶ Start</button>
+        <p style="color: #ccc; margin: 10px 0;">WASD or Arrows to move</p>
+    </div>
+
+    <script type="text/python">
+        # Maze-enabled game (Brython). Removed restart button. Start unlocks play.
+        from browser import document, timer, window
+        import math
+
+        canvas = document["gameCanvas"]
+        ctx = canvas.getContext("2d")
+
+        W = int(canvas.attrs["width"])
+        H = int(canvas.attrs["height"])
+
+        # Maze layout (1 = wall, 0 = path) - 13 rows x 20 cols (from original)
+        MAZE = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1],
+            [1,0,1,1,1,0,1,1,0,1,1,0,1,1,1,0,1,1,1,1],
+            [1,0,0,0,1,0,0,1,0,0,1,0,0,0,1,0,0,0,1,1],
+            [1,1,1,0,1,1,1,1,1,0,1,1,1,0,1,1,1,0,0,1],
+            [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,1],
+            [1,0,1,1,1,0,1,1,1,1,1,1,1,1,0,1,1,1,0,1],
+            [1,0,0,0,0,0,1,0,0,0,0,0,0,1,0,0,0,1,0,1],
+            [1,1,1,1,1,0,1,1,1,1,1,1,0,1,1,1,0,1,1,1],
+            [1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+            [1,0,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1],
+            [1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1]
+        ]
+
+        ROWS = len(MAZE)
+        COLS = len(MAZE[0])
+        TILE = 40
+
+        # center maze on canvas
+        maze_w = COLS * TILE
+        maze_h = ROWS * TILE
+        offset_x = (W - maze_w) // 2
+        offset_y = (H - maze_h) // 2
+
+        # player state (start at first open path found)
+        def find_start():
+            for r in range(ROWS):
+                for c in range(COLS):
+                    if MAZE[r][c] == 0:
+                        return c*TILE + TILE//2 + offset_x, r*TILE + TILE//2 + offset_y
+            return offset_x + TILE + TILE//2, offset_y + TILE + TILE//2
+
+        player_x, player_y = find_start()
+        player_r = TILE//3
+        speed = 3.5
+        keys = set()
+        running = False
+        show_cake = False
+
+        # treasure at bottom-rightmost open tile
+        def find_treasure():
+            for r in range(ROWS-1, -1, -1):
+                for c in range(COLS-1, -1, -1):
+                    if MAZE[r][c] == 0:
+                        return c*TILE + TILE//2 + offset_x, r*TILE + TILE//2 + offset_y
+            return offset_x + (COLS-2)*TILE + TILE//2, offset_y + (ROWS-2)*TILE + TILE//2
+
+        treasure_x, treasure_y = find_treasure()
+        treasure_r = TILE//3
+        cake_timer = 0
+
+        # helpers
+        def clear():
+            ctx.clearRect(0, 0, W, H)
+
+        def tile_at_pixel(px, py):
+            cx = px - offset_x
+            cy = py - offset_y
+            col = int(cx) // TILE
+            row = int(cy) // TILE
+            if row < 0 or row >= ROWS or col < 0 or col >= COLS:
+                return 1  # treat outside as wall
+            return MAZE[row][col]
+
+        def is_wall_pixel(px, py):
+            return tile_at_pixel(px, py) == 1
+
+        def draw_maze():
+            # background for maze area
+            ctx.fillStyle = '#111827'
+            ctx.fillRect(offset_x - 2, offset_y - 2, maze_w + 4, maze_h + 4)
+
+            for r in range(ROWS):
+                for c in range(COLS):
+                    x = offset_x + c*TILE
+                    y = offset_y + r*TILE
+                    if MAZE[r][c] == 1:
+                        ctx.fillStyle = '#666'
+                        ctx.fillRect(x, y, TILE, TILE)
+                    else:
+                        ctx.fillStyle = '#1f2937'
+                        ctx.fillRect(x, y, TILE, TILE)
+                        # draw crumb / dot to collect (optional visual)
+                        ctx.fillStyle = 'rgba(255,215,0,0.08)'
+                        ctx.fillRect(x+TILE//3, y+TILE//3, TILE//3, TILE//3)
+                    # tile border
+                    ctx.strokeStyle = 'rgba(0,0,0,0.25)'
+                    ctx.strokeRect(x+0.5, y+0.5, TILE-1, TILE-1)
+
+        def draw_pixel_character(x, y):
+            grad = ctx.createRadialGradient(x-2, y-2, 2, x, y, player_r)
+            grad.addColorStop(0, 'rgba(255,220,230,1)')
+            grad.addColorStop(0.6, 'rgba(255,160,200,1)')
+            grad.addColorStop(1, 'rgba(255,100,150,0.0)')
+            ctx.fillStyle = grad
+            ctx.beginPath()
+            ctx.arc(x, y, player_r, 0, 2 * math.pi)
+            ctx.fill()
+            ctx.fillStyle = 'black'
+            ctx.fillRect(x-6, y-6, 4, 4)
+            ctx.fillRect(x+2, y-6, 4, 4)
+            ctx.fillRect(x-2, y+6, 4, 3)
+
+        def draw_treasure(x, y, opened=False):
+            ctx.fillStyle = '#333'
+            ctx.fillRect(x-treasure_r, y-treasure_r, treasure_r*2, treasure_r*2)
+            ctx.fillStyle = '#ff8c00'
+            ctx.fillRect(x-treasure_r+6, y-treasure_r+6, treasure_r*2-12, treasure_r*2-12)
+            if opened:
+                # cake
+                ctx.fillStyle = '#ffc0cb'
+                ctx.fillRect(x-12, y-18, 24, 12)
+                ctx.fillStyle = '#fff'
+                ctx.fillRect(x-8, y-26, 16, 8)
+                ctx.fillStyle = '#ff0000'
+                ctx.beginPath()
+                ctx.arc(x-4, y-24, 3, 0, 2*math.pi)
+                ctx.fill()
+
+        def clamp(v, a, b):
+            return max(a, min(b, v))
+
+        def update_state():
+            nonlocal_vars = globals()
+            global player_x, player_y, running, show_cake, cake_timer
+            if not running:
+                return
+            dx = dy = 0
+            if 'ArrowLeft' in keys or 'a' in keys or 'A' in keys:
+                dx -= speed
+            if 'ArrowRight' in keys or 'd' in keys or 'D' in keys:
+                dx += speed
+            if 'ArrowUp' in keys or 'w' in keys or 'W' in keys:
+                dy -= speed
+            if 'ArrowDown' in keys or 's' in keys or 'S' in keys:
+                dy += speed
+
+            # try horizontal move and check center point against walls
+            new_x = player_x + dx
+            new_y = player_y
+            if not is_wall_pixel(new_x, new_y):
+                player_x = clamp(new_x, offset_x + player_r, offset_x + maze_w - player_r)
+
+            # try vertical move
+            new_x = player_x
+            new_y = player_y + dy
+            if not is_wall_pixel(new_x, new_y):
+                player_y = clamp(new_y, offset_y + player_r, offset_y + maze_h - player_r)
+
+            # Check for reaching treasure
+            dist = math.hypot(player_x - treasure_x, player_y - treasure_y)
+            if dist <= player_r + treasure_r and not show_cake:
+                show_cake = True
+                cake_timer = 0
+
+            if show_cake:
+                cake_timer += 1
+                # stop movement briefly after opening
+                if cake_timer > 180:
+                    running = False
+                    # re-enable start button for replay
+                    if "disabled" in document["startBtn"].attrs:
+                        del document["startBtn"].attrs["disabled"]
+
+        def draw_ui():
+            if not running and not show_cake:
+                ctx.fillStyle = 'rgba(0,0,0,0.5)'
+                ctx.fillRect(12, 12, 360, 42)
+                ctx.fillStyle = '#ffd700'
+                ctx.font = '18px monospace'
+                ctx.fillText('Press Start to play — WASD / Arrow keys', 20, 40)
+            if show_cake:
+                ctx.fillStyle = '#ffd700'
+                ctx.font = '36px monospace'
+                text = 'HAPPY BIRTHDAY!'
+                ctx.fillText(text, W//2 - len(text)*8, 80)
+
+        def game_loop():
+            clear()
+            draw_maze()
+            update_state()
+            draw_treasure(treasure_x, treasure_y, opened=show_cake)
+            draw_pixel_character(player_x, player_y)
+            draw_ui()
+
+        # input handlers
+        def on_key_down(ev):
+            keys.add(ev.key)
+
+        def on_key_up(ev):
+            try:
+                keys.remove(ev.key)
+            except:
+                pass
+
+        document.bind('keydown', on_key_down)
+        document.bind('keyup', on_key_up)
+
+        # start button handler (restarts if previously finished)
+        def start_game(ev=None):
+            global running, show_cake, player_x, player_y, cake_timer, treasure_x, treasure_y
+            # reset positions
+            player_x, player_y = find_start()
+            treasure_x, treasure_y = find_treasure()
+            show_cake = False
+            cake_timer = 0
+            running = True
+            document["startBtn"].attrs["disabled"] = True
+
+        document["startBtn"].bind("click", start_game)
+
+        # run loop at ~60fps
+        timer.set_interval(game_loop, 16)
+    </script>
+</body>
+</html>
